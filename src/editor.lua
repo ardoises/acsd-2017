@@ -1,6 +1,8 @@
 local Copas = require "copas"
 local Layer = require "layeredata"
 
+math.randomseed (os.time ())
+
 return function ()
   local Editor = {}
   local Client = {}
@@ -23,9 +25,9 @@ return function ()
     local refines = target [Layer.key.refines]
     if #refines > 0 then -- proxy
       Layer.write_to (target, refines [#refines])
-      local ok = pcall (patch, target)
+      local ok, err = pcall (patch, target)
       Layer.write_to (target, nil)
-      return ok
+      return ok, err
     else -- model
       patch (target)
     end
@@ -49,17 +51,21 @@ return function ()
   local function receive (to, filter)
     filter = filter or function () return true end
     while running do
+      Copas.sleep (0)
       local message = to.messages [1]
       if message and filter (table.unpack (message)) then
+        if math.random (10) > 5 then
+          Copas.sleep (0)
+        end
         table.remove (to.messages, 1)
         return table.unpack (message)
       end
-      Copas.sleep (0)
     end
   end
 
   local function send (to, ...)
     to.messages [#to.messages+1] = { ... }
+    Copas.sleep (0)
   end
 
   local server = setmetatable ({
