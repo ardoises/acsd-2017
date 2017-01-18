@@ -1,9 +1,10 @@
-local Copas = require "copas"
-local Layer = require "layeredata"
+local Copas   = require "copas"
+local Layer   = require "layeredata"
+local Serpent = require "serpent"
 
 math.randomseed (os.time ())
 
-return function ()
+return function (fs)
 
   -- Classes for editor, client and server:
   local Editor = {}
@@ -14,9 +15,11 @@ return function ()
   Server.__index = Server
 
   -- Create `editor`:
-  local editor  = setmetatable ({}, Editor)
-  local running = true
-  local threads = {}
+  local editor  = setmetatable ({
+    running = true,
+    id      = 0,
+    last    = os.time (),
+  }, Editor)
 
   -- Create an empty layer:
   local function empty ()
@@ -66,26 +69,56 @@ return function ()
     -- `filter` is a function that takes the message contents as arguments,
     -- and returns `true` if it is accepted:
     filter = filter or function () return true end
-    while running or #to.messages ~= 0 do
+    while editor.running or #to.messages ~= 0 do
       -- This sleep must be at the beginning, **not** at the end,
       -- because it would not ensure that the last message is received.
       Copas.sleep (0)
       local message = to.messages [1]
-      if message and filter (table.unpack (message)) then
-        if math.random (10) > 5 then
-          -- Randomly sleep to create nondeterminism:
-          Copas.sleep (0)
+      if message and filter (message) then
+        -- Randomly sleep to create nondeterminism:
+        if math.random () > 0.5 then Copas.sleep (0) end
+        if to.id then
+          print ("<", Serpent.line ({
+            origin  = message.origin.id or "server",
+            target  = to.id,
+            connect = message.connect,
+            patch   = message.patch and tostring (message.patch),
+            success = message.success,
+          }, {
+            comment  = false,
+            sortkeys = true,
+            compact  = true,
+            nocode   = true,
+          }))
         end
         table.remove (to.messages, 1)
         -- If `message` exists and matches `filter`, return its contents.
-        return table.unpack (message)
+        return message
       end
     end
   end
 
   -- Send a message:
-  local function send (to, ...)
-    to.messages [#to.messages+1] = { ... }
+  local function send (to, message)
+    -- Randomly sleep to create nondeterminism:
+    if math.random () > 0.5 then Copas.sleep (0) end
+    if not to.id then
+      print (">", Serpent.line ({
+        origin  = message.origin.id or "server",
+        connect = message.connect,
+        patch   = message.patch and tostring (message.patch),
+        success = message.success,
+      }, {
+        comment  = false,
+        sortkeys = true,
+        compact  = true,
+        nocode   = true,
+      }))
+    end
+    editor.last = os.time ()
+    to.messages [#to.messages+1] = message
+    -- Randomly sleep to create nondeterminism:
+    if math.random () > 0.5 then Copas.sleep (0) end
   end
 
   -- Add the `send` and `receive` methods to clients and server:
@@ -95,32 +128,88 @@ return function ()
   Server.receive = receive
 
   -- Create the server:
-  local server = setmetatable ({
+  editor.server = setmetatable ({
     proxy    = empty (),
     model    = empty (),
+    patches  = {},
     clients  = {},
     messages = {},
   }, Server)
-  push (server.proxy, server.model)
-  editor.server = server
+  push (editor.server.proxy, editor.server.model)
+
+  -- Create a thread to perform the server loop:
+  Copas.addthread (function ()
+    while editor.running do
+      -- Receive a patch from any client:
+      local message = editor.server:receive ()
+      if not message then
+        return
+      end
+      if message.connect then
+        for _, t in ipairs (editor.server.patches) do
+          message.origin:send {
+            success = true,
+            patch   = t.patch,
+            origin  = t.origin,
+          }
+        end
+        editor.server.clients [message.origin] = true
+      elseif message.patch then
+        -- Test the patch on a fresh layer:
+        local layer = empty ()
+        push (editor.server.proxy, layer)
+        local success = apply (editor.server.proxy, message.patch)
+        if success then
+          -- Apply the patch to the model:
+          editor.server.patches [#editor.server.patches+1] = message
+          apply (editor.server.model, message.patch)
+          -- Send the successful patch to all clients:
+          for client in pairs (editor.server.clients) do
+            client:send {
+              success = success,
+              origin  = message.origin,
+              patch   = message.patch,
+            }
+          end
+        else
+          -- Send a failure message to the origin client:
+          message.origin:send {
+            success = success,
+            origin  = message.origin,
+            patch   = message.patch,
+          }
+        end
+        -- Cleanup:
+        pop (editor.server.proxy, layer)
+      else
+        assert (false)
+      end
+    end
+  end)
 
   -- Create a client:
   function Editor.client ()
     local client = setmetatable ({
+      id       = editor.id,
       proxy    = empty (),
       model    = empty (),
       messages = {},
     }, Client)
+    editor.id = editor.id + 1
     push (client.proxy, client.model)
-    server.clients [client] = true
+    editor.server:send {
+      origin  = client,
+      connect = true,
+    }
+
     -- Create a thread to wait for patches from other clients:
     Copas.addthread (function ()
       while true do
-        local _, patch = client:receive (function (c, _) return c ~= client end)
-        if not patch then
+        local message = client:receive (function (message) return message.origin ~= client end)
+        if not message then
           return
         end
-        apply (client.model, patch)
+        apply (client.model, message.patch)
       end
     end)
     return client
@@ -128,84 +217,51 @@ return function ()
 
   -- Apply a patch on a client:
   function Client:patch (patch)
-    local co = Copas.addthread (function ()
-      -- Create a fresh layer to apply `patch`:
-      local layer = empty ()
-      push (self.proxy, layer)
-      -- Apply `patch` locally:
-      local success = apply (self.proxy, patch)
-      if success then
-        -- Send `patch` to the server:
-        server:send (self, patch)
+    -- Create a fresh layer to apply `patch`:
+    local layer = empty ()
+    push (self.proxy, layer)
+    -- Apply `patch` locally:
+    local success = apply (self.proxy, patch)
+    if success then
+      -- Send `patch` to the server:
+      editor.server:send {
+        origin = self,
+        patch  = patch,
+      }
+      Copas.addthread (function ()
         -- Receive the answer from the server:
-        local _, _, ack = self:receive (function (_, p, _) return p == patch end)
-        if ack then
+        local message = self:receive (function (message) return message.origin == self and message.patch == patch end)
+        if message.success then
           -- Apply `patch` to the model:
           apply (self.model, patch)
         end
-      end
+        -- Cleanup:
+        pop (self.proxy, layer)
+      end)
+    else
       -- Cleanup:
       pop (self.proxy, layer)
-      threads [coroutine.running ()] = nil
-      return success
-    end)
-    -- Store the thread, required to detect termination:
-    threads [co] = true
+    end
+    return success
   end
 
-  -- Create a thread to perform the server loop:
+  -- Run the editor and perform actions described in the `fs` functions:
   Copas.addthread (function ()
-    while running do
-      -- Receive a patch from any client:
-      local origin, patch = server:receive ()
-      if not patch then
-        return
-      end
-      -- Test the patch on a fresh layer:
-      local layer = empty ()
-      push (server.proxy, layer)
-      local success = apply (server.proxy, patch)
-      if success then
-        -- Apply the patch to the model:
-        apply (server.model, patch)
-        -- Send the successful patch to all clients:
-        for client in pairs (server.clients) do
-          client:send (origin, patch, success)
-        end
-      else
-        -- Send a failure message to the origin client:
-        origin:send (origin, patch, success)
-      end
-      -- Cleanup:
-      pop (server.proxy, layer)
+    editor.running = true
+    for _, f in ipairs (fs) do
+      local client = editor:client ()
+      Copas.addthread (function ()
+        f (client)
+      end)
     end
   end)
-
-  -- Run the editor and perform actions described in the `f` function:
-  function Editor.run (_, f)
-    Copas.addthread (function ()
-      running = true
-      f ()
-      running = false
-    end)
-    Copas.loop ()
-  end
-
-  -- Wait for edition to finish:
-  function Editor.wait ()
+  Copas.addthread (function ()
     repeat
       Copas.sleep (0)
-      local finished = next (threads) == nil
-      for client in pairs (server.clients) do
-        finished = finished and #client.messages == 0
-      end
-      finished = finished and #server.messages == 0
-    until finished
-    for client in pairs (server.clients) do
-      local refines = client.proxy [Layer.key.refines]
-      assert (#refines == 1)
-    end
-  end
+    until os.time () - editor.last >= 2 -- seconds
+    editor.running = false
+  end)
+  Copas.loop ()
 
   return editor
 end
