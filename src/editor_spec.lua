@@ -5,7 +5,7 @@ math.randomseed (os.time ())
 
 describe ("collaborative edition", function ()
 
-  it ("#1 works on simple example", function ()
+  it ("works on simple example", function ()
     -- This example creates two clients `c1` and `c2`.
     -- They update the model by adding `1` to a field of the model.
     local n          = 10
@@ -32,16 +32,14 @@ describe ("collaborative edition", function ()
   it ("is consistent between clients and server", function ()
     -- This example creates several clients that apply several patches.
     -- Each patch updates a specific field of the model with a random value.
-    local editor    = Editor ()
-    local clients   = {}
-    local nclients  = 5
-    local nmessages = 5
+    local clients    = {}
+    local parameters = {}
+    local nclients   = 5
+    local nmessages  = 5
     for i = 1, nclients do
-      clients [i] = editor:client ()
-    end
-    editor:run (function ()
-      for _ = 1, nmessages do
-        for _, client in ipairs (clients) do
+      parameters [i] = function (client)
+        clients [i] = client
+        for _ = 1, nmessages do
           -- We cannot put the `math.random` call within the patch,
           -- as its result would take different values in the server
           -- and the clients.
@@ -51,8 +49,8 @@ describe ("collaborative edition", function ()
           end)
         end
       end
-      editor:wait ()
-    end)
+    end
+    local editor = Editor (parameters)
     -- Check that the server and all clients agree on the final value:
     for _, client in ipairs (clients) do
       assert.are.equal (client.model.value, editor.server.model.value)
@@ -66,38 +64,32 @@ describe ("collaborative edition", function ()
     -- Each patch pushes a random value to the stack corresponding
     -- to its client in the model.
     -- The sequence of patches applied from a client should be preserved.
-    local editor    = Editor ()
-    local clients   = {}
-    local nclients  = 5
-    local nmessages = 5
-    local values    = {}
+    local clients    = {}
+    local values     = {}
+    local parameters = {}
+    local nclients   = 5
+    local nmessages  = 5
     for i = 1, nclients do
-      local client    = editor:client ()
-      clients [i]     = client
-      values [client] = {}
-    end
-    editor:run (function ()
-      for i, client in ipairs (clients) do
+      parameters [i] = function (client)
+        local cvalues    = {}
+        values  [client] = cvalues
+        clients [i     ] = client
         client:patch (function (model)
           model [i] = {}
         end)
-      end
-      for _ = 1, nmessages do
-        for i, client in ipairs (clients) do
+        for _ = 1, nmessages do
           -- We cannot put the `math.random` call within the patch,
           -- as its result would take different values in the server
           -- and the clients.
-          local value   = math.random (1000)
-          local cvalues = values [client]
+          local value = math.random (1000)
           cvalues [#cvalues+1] = value
           client:patch (function (model)
-            local mypart = model [i]
-            mypart [#mypart+1] = value
+            model [i] [#model [i]+1] = value
           end)
         end
       end
-      editor:wait ()
-    end)
+    end
+    local _ = Editor (parameters)
     -- Check that the sequence of patches is preserved for each client:
     for i, client in ipairs (clients) do
       local cvalues = values [client]
