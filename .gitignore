@@ -1,3 +1,5 @@
 .wercker
 rockspec/*.src.rock
+src/editor.promela.trail
+src/pan*
 ENVIRONMENT
