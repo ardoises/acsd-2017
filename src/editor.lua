@@ -33,6 +33,7 @@ return function (fs)
     running = true,
     id      = 0,
     last    = os.time (),
+    clients = {},
   }
 
   -- Return a new empty layer:
@@ -67,10 +68,9 @@ return function (fs)
   -- Remove the bottommost layer from the refinements of `target`:
   local function pop (target)
     local refines = target [Layer.key.refines]
-    for i = 2, #refines-1 do -- start at 2 to avoid removing the model
-      refines [i-1] = refines [i]
+    for i = 2, #refines do -- start at 2 to avoid removing the model
+      refines [i] = refines [i+1]
     end
-    refines [#refines] = nil
   end
 
   -- Return the first message received by `to`:
@@ -252,6 +252,7 @@ return function (fs)
     editor.running = true
     for _, f in ipairs (fs) do
       local client = editor:client ()
+      editor.clients [client] = true
       Copas.addthread (function ()
         f (client)
       end)
