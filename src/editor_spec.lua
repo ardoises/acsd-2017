@@ -5,10 +5,10 @@ math.randomseed (os.time ())
 
 describe ("collaborative edition", function ()
 
-  it ("works on simple example", function ()
+  it ("#1 works on simple example", function ()
     -- This example creates two clients `c1` and `c2`.
     -- They update the model by adding `1` to a field of the model.
-    local n          = 10
+    local n          = 2
     local clients    = {}
     local parameters = {}
     for i = 1, n do
@@ -22,7 +22,7 @@ describe ("collaborative edition", function ()
     local editor = Editor (parameters)
     -- Check that the final value is `2` for the server model,
     -- and for both clients:
-    assert.are.equal (n         , editor.server.model.x)
+    assert.are.equal (n, editor.server.model.x)
     for _, client in ipairs (clients) do
       assert.are.equal (client.model.x, editor.server.model.x)
       assert.are.equal (client.proxy.x, editor.server.model.x)

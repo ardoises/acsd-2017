@@ -4,7 +4,6 @@ cd src/
 spin -a editor.pml
 clang -O3 -DNFAIR=3 pan.c -o pan
 ./pan -a -E -f -q -N empty_layers
-./pan -a -E -f -q -N empty_channels
 ./pan -a -E -f -q -N consistency
 rm pan*
 rm _spin*

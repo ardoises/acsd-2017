@@ -7,21 +7,35 @@ math.randomseed (os.time ())
 return function (fs)
 
   -- Classes for editor, client and server:
-  local Editor = {}
-  local Client = {}
-  local Server = {}
-  Editor.__index = Editor
-  Client.__index = Client
-  Server.__index = Server
+  local Editor_mt = {}
+  local Editor    = setmetatable ({}, Editor_mt)
+  Editor.__index  = Editor
+  function Editor_mt.__call (_, t)
+    return setmetatable (t, Editor)
+  end
 
-  -- Create `editor`:
-  local editor  = setmetatable ({
+  local Server_mt = {}
+  local Server    = setmetatable ({}, Server_mt)
+  Server.__index  = Server
+  function Server_mt.__call (_, t)
+    return setmetatable (t, Server)
+  end
+
+  local Client_mt = {}
+  local Client    = setmetatable ({}, Client_mt)
+  Client.__index  = Client
+  function Client_mt.__call (_, t)
+    return setmetatable (t, Client)
+  end
+
+  -- The `editor`:
+  local editor  = Editor {
     running = true,
     id      = 0,
     last    = os.time (),
-  }, Editor)
+  }
 
-  -- Create an empty layer:
+  -- Return a new empty layer:
   local function empty ()
     local layer = Layer.new {}
     layer [Layer.key.refines] = {}
@@ -44,37 +58,29 @@ return function (fs)
     end
   end
 
-  -- Push `layer` in the refinements of `target`:
+  -- Add `layer` at the top of the refinements of `target`:
   local function push (target, layer)
     local refines = target [Layer.key.refines]
     refines [#refines+1] = layer
   end
 
-  -- Pop `layer` from the refinements of `target`:
-  local function pop (target, layer)
+  -- Remove the bottommost layer from the refinements of `target`:
+  local function pop (target)
     local refines = target [Layer.key.refines]
-    for i = #refines, 1, -1 do
-      if refines [i] == layer then
-        for j = i+1, #refines do
-          refines [j-1] = refines [j]
-        end
-        refines [#refines] = nil
-        return
-      end
+    for i = 2, #refines-1 do -- start at 2 to avoid removing the model
+      refines [i-1] = refines [i]
     end
+    refines [#refines] = nil
   end
 
-  -- Receive a message that matches `filter`:
-  local function receive (to, filter)
-    -- `filter` is a function that takes the message contents as arguments,
-    -- and returns `true` if it is accepted:
-    filter = filter or function () return true end
+  -- Return the first message received by `to`:
+  local function receive (to)
     while editor.running or #to.messages ~= 0 do
       -- This sleep must be at the beginning, **not** at the end,
       -- because it would not ensure that the last message is received.
       Copas.sleep (0)
       local message = to.messages [1]
-      if message and filter (message) then
+      if message then
         -- Randomly sleep to create nondeterminism:
         if math.random () > 0.5 then Copas.sleep (0) end
         if to.id then
@@ -98,11 +104,11 @@ return function (fs)
     end
   end
 
-  -- Send a message:
+  -- Send a `message` to `to`:
   local function send (to, message)
     -- Randomly sleep to create nondeterminism:
     if math.random () > 0.5 then Copas.sleep (0) end
-    if not to.id then
+    if to.id then
       print (">", Serpent.line ({
         origin  = message.origin.id or "server",
         connect = message.connect,
@@ -128,13 +134,13 @@ return function (fs)
   Server.receive = receive
 
   -- Create the server:
-  editor.server = setmetatable ({
+  editor.server = Server {
     proxy    = empty (),
     model    = empty (),
     patches  = {},
     clients  = {},
     messages = {},
-  }, Server)
+  }
   push (editor.server.proxy, editor.server.model)
 
   -- Create a thread to perform the server loop:
@@ -180,7 +186,7 @@ return function (fs)
           }
         end
         -- Cleanup:
-        pop (editor.server.proxy, layer)
+        pop (editor.server.proxy)
       else
         assert (false)
       end
@@ -189,12 +195,12 @@ return function (fs)
 
   -- Create a client:
   function Editor.client ()
-    local client = setmetatable ({
+    local client = Client {
       id       = editor.id,
       proxy    = empty (),
       model    = empty (),
       messages = {},
-    }, Client)
+    }
     editor.id = editor.id + 1
     push (client.proxy, client.model)
     editor.server:send {
@@ -202,14 +208,20 @@ return function (fs)
       connect = true,
     }
 
-    -- Create a thread to wait for patches from other clients:
+    -- Create a thread to wait for patches and answers:
     Copas.addthread (function ()
       while true do
-        local message = client:receive (function (message) return message.origin ~= client end)
+        local message = client:receive ()
         if not message then
           return
         end
-        apply (client.model, message.patch)
+        editor.last = os.time ()
+        if message.success then
+          apply (client.model, message.patch)
+        end
+        if message.origin == client then
+          pop (client.proxy)
+        end
       end
     end)
     return client
@@ -228,19 +240,9 @@ return function (fs)
         origin = self,
         patch  = patch,
       }
-      Copas.addthread (function ()
-        -- Receive the answer from the server:
-        local message = self:receive (function (message) return message.origin == self and message.patch == patch end)
-        if message.success then
-          -- Apply `patch` to the model:
-          apply (self.model, patch)
-        end
-        -- Cleanup:
-        pop (self.proxy, layer)
-      end)
     else
       -- Cleanup:
-      pop (self.proxy, layer)
+      pop (self.proxy)
     end
     return success
   end
